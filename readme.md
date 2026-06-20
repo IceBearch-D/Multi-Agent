@@ -1,129 +1,590 @@
-为了将一个个人 Demo 提升到可以写进简历、并能应对面试官深度追问的“工业级”项目水平，我们需要避开简单的“单 Agent 聊天套壳”方案，转而设计一个**解决复杂、多步骤、有状态、且具备工程闭环**的系统。
+# MSE-System: Multi-Agent Software Engineering System
 
-这里为您设计一个**“基于 LangGraph 的企业级多智能体协同软件工程系统（Multi-Agent Software Engineering System，简称 MSE-System）”**的项目方案。软件工程场景（自动写代码、Debug、重构）天然需要多文件读写、沙箱运行、测试反馈、状态循环，是最能体现 Agent 深度和工程复杂度的场景之一。
+<div align="center">
 
-以下是该项目的系统设计方案：
+**基于 LangGraph 的企业级多智能体协同软件工程与自动修复系统**
+
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![LangGraph](https://img.shields.io/badge/framework-LangGraph-orange)](https://langchain-ai.github.io/langgraph/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/sandbox-Docker-2496ED?logo=docker)](https://www.docker.com/)
+
+</div>
 
 ---
 
-# 项目设计方案：基于 LangGraph 的多智能体协同软件工程与自动修复系统
+## 📖 目录
 
-## 1. 项目背景
+- [项目背景](#项目背景)
+- [系统架构](#系统架构)
+- [核心特性](#核心特性)
+- [技术栈](#技术栈)
+- [快速开始](#快速开始)
+- [使用指南](#使用指南)
+- [项目结构](#项目结构)
+- [配置说明](#配置说明)
+- [Benchmark 评测](#benchmark-评测)
+- [设计亮点](#设计亮点)
+- [已知限制与未来规划](#已知限制与未来规划)
+- [面试准备](#面试准备)
+- [License](#license)
+
+---
+
+## 项目背景
 
 大语言模型（LLM）在单次代码生成任务中表现出色，但在面对真实企业级项目时仍面临诸多挑战：
 
-* **黑盒生成与幻觉**：直接生成的代码往往存在语法错误或逻辑漏洞，缺乏编译和运行验证。
-* **上下文丢失**：大型代码库（Repo）代码量庞大，单一 Prompt 无法容纳整个项目的上下文。
-* **多任务协同缺失**：软件开发需要需求分析、架构设计、编码、测试和 Debug 等多个角色的深度配合，单一 Agent 难以兼顾多维度的决策。
-* **缺乏容错机制**：生成代码出错后，无法像人类工程师一样利用编译器报错信息进行自主迭代与纠错。
+- **黑盒生成与幻觉**：直接生成的代码往往存在语法错误或逻辑漏洞，缺乏编译和运行验证。
+- **上下文丢失**：大型代码库代码量庞大，单一 Prompt 无法容纳整个项目的上下文。
+- **多任务协同缺失**：软件开发需要需求分析、架构设计、编码、测试和 Debug 等多角色深度配合。
+- **缺乏容错机制**：生成代码出错后，无法像人类工程师一样利用编译器报错信息进行自主迭代与纠错。
 
-## 2. 项目意义
-
-本系统旨在探索一套工业级的多智能体协同工作流，将软件工程中的“设计-编码-测试-修复”闭环自动化。
-
-* **工程实用价值**：通过自动化处理日常的 Bug 修复和单元测试编写，降低研发团队的事务性工作负担。
-* **技术探索价值**：解决多 Agent 协同中的**状态漂移（State Drift）**、**长上下文检索（Repository RAG）**、**安全沙箱执行（Sandboxed Execution）**以及**反馈式自我修正（Reflexion）**等前沿技术难题，从“Prompt 工程”走向真正的“Agent 软件工程”。
-
-## 3. 项目内容
-
-系统主要由以下四个核心模块构成：
-
-```
-                    ┌────────────────────────┐
-                    │  User Input (Issue)    │
-                    └───────────┬────────────┘
-                                │
-   ┌────────────────────────────▼────────────────────────────┐
-   │ 1. Codebase RAG & AST Parser (Context Retrieval)       │
-   └────────────────────────────┬────────────┘
-                                │
-   ┌────────────────────────────▼────────────────────────────┐
-   │ 2. LangGraph Stateful Multi-Agent Orchestration        │
-   │                                                         │
-   │  ┌──────────────┐     ┌──────────────┐    ┌──────────┐  │
-   │  │ Product Agent│ ──> │  Coder Agent │ ──>│Test Agent│  │
-   │  └──────────────┘     └──────────────┘    └────┬─────┘  │
-   │           ▲                   ▲                │        │
-   │           └───────────────────┴────────────────┘        │
-   │                  Error Feedback Loop                    │
-   └────────────────────────────┬────────────┘
-                                │
-   ┌────────────────────────────▼────────────────────────────┐
-   │ 3. Docker Container Sandbox (Execution & Testing)       │
-   └────────────────────────────┬────────────┘
-                                │
-   ┌────────────────────────────▼────────────────────────────┐
-   │ 4. Evaluation & Observability (LangSmith / Phoenix)     │
-   └─────────────────────────────────────────────────────────┘
-```
-
-1. **代码库高精度检索模块（Codebase RAG）**：基于 AST（抽象语法树）解析代码结构，对代码库进行语义分块并存入向量数据库，实现针对复杂工程的代码上下文精准召回。
-2. **多智能体协同调度模块（Multi-Agent Core）**：利用 LangGraph 构建有状态的图结构，定义 **Product Agent（需求拆解）**、**Coder Agent（代码修改）**、**Tester Agent（测试与诊断）**。
-3. **安全沙箱执行模块（Execution Sandbox）**：构建基于 Docker 的轻量级隔离容器，在其中安全地执行 Agent 生成的代码、运行单元测试，并将运行结果（stdout/stderr）反馈给 Agent。
-4. **反思与纠错闭环（Reflexion Loop）**：当测试未通过时，Tester Agent 提取报错日志并进行根因分析，将修改建议反馈给 Coder Agent，形成“运行-报错-修改-再运行”的自适应修正机制。
-
-## 4. 预期目标
-
-* **多文件协同修改**：系统能够跨多个文件理解并修改代码，而不仅仅是修改单一文件中的单个函数。
-* **自适应纠错能力**：在遇到编译或测试失败时，系统通过报错日志自主修复的成功率达到设定目标（例如在局部测试集上，相比单次生成的修复率提升 30% 以上）。
-* **运行安全性保障**：所有生成代码的编译与测试均在隔离的沙箱内进行，不污染宿主机环境，具备抗恶意代码注入的能力。
-* **决策轨迹可观测**：通过可视化控制台，清晰展示 Agent 之间的通信内容、决策图跳转路径及 Token 消耗。
-
-## 5. 方法与技术路线（核心深度所在）
-
-要让简历脱颖而出，必须在技术路线中展现对**底层原理、工程边界和优化细节**的思考：
-
-### 5.1 核心技术栈
-
-* **Agent 编排框架**：**LangGraph**（之所以不用 AutoGen，是因为 LangGraph 引入了 State-Graph 的概念，能通过显式定义图的节点、边和状态（State）来控制 Agent 的跳转，解决复杂业务流中的死循环和状态丢失问题）。
-* **代码分析与检索**：**Tree-sitter**（用于提取代码的 AST，进行函数/类级别的关系映射）+ **Chroma/Milvus**（向量数据库）+ **BGE-Reranker**（重排模型提高检索精度）。
-* **沙箱执行**：**Docker SDK for Python**（动态拉取/运行隔离容器，通过 Volume 挂载代码目录，限制网络和执行时间）。
-* **大模型调用与结构化输出**：**Pydantic / Instructor**（强制大模型通过 JSON Schema 输出标准的工具调用参数或修改指令，避免解析失败）。
-* **可观测性**：**LangSmith** 或 **Arize Phoenix**（追踪 Agent 的多轮调用链路，监控 Latency、Token 成本以及 Tool Call 的成功率）。
-
-### 5.2 核心解决的技术难点（面试高频追问点）
-
-#### 难点 A：大项目下的 Context Optimization（如何不把整个项目塞给 LLM）
-
-* **技术路线**：不采用简单的暴力拼接。项目启动时，使用 `Tree-sitter` 解析整个 Repo 的依赖树（Call Graph），生成项目大纲（Project Outline）。当用户输入 Issue 时，先通过 `Semantic Search` 检索相关的代码片，再结合 `Dependency Graph` 将该代码片的外围调用接口（API Signature）作为补充上下文提供给 LLM。这样既保证了上下文的完整性，又避免了 Token 的浪费。
-
-#### 难点 B：多 Agent 状态同步与死循环控制（Avoid Infinity Loop）
-
-* **技术路线**：在 LangGraph 的全局 `State` 中，定义一个 `ThreadState` 结构，存储当前代码版本、测试日志、重试次数（Retry Count）以及任务完成度。为了防止 Coder Agent 和 Tester Agent 陷入“报错 -> 乱改 -> 报错”的死循环，在 State 中引入**衰减机制**与**回退机制**。当重试次数超过 3 次时，触发 Product Agent 介入，重新拆解任务或降低目标，甚至回退到上一个已知的稳定代码版本。
-
-#### 难点 C：代码合并冲突与局部修改（Diff Integration）
-
-* **技术路线**：LLM 重新生成整个文件不仅慢，而且容易带入无意识的改动。我们设计 Coder Agent 使用 **Unified Diff Format** 或 **Search & Replace Blocks** 格式输出修改指令。系统在工程端实现一个 Python 解析器，将 LLM 生成的 Diff 增量式地应用到目标文件中。如果应用失败，直接作为“语法错误”反馈给 Coder。
+MSE-System 旨在探索一套**工业级的多智能体协同工作流**，将软件工程中的"设计-编码-测试-修复"闭环自动化，从"Prompt 工程"走向真正的"Agent 软件工程"。
 
 ---
 
-## 6. 预期研究与项目成果
+## 系统架构
 
-通过该项目，您最终在简历和技术展示中可交付的成果包括：
+### 整体架构
 
-1. **高质量开源代码库**：
-   * 模块化设计的 Pytest 测试套件，覆盖率（Coverage）达 80% 以上，展现良好的软件工程素养。
-   * 规范的配置文件（`Dockerfile`, `docker-compose.yml`, `.env.example`），支持一键本地部署。
-2. **可视化 Agent 监控 Dashboard**：
-   * 基于 **Streamlit** 或 **Gradio** 构建的前端界面。
-   * 不仅能输入任务，还能**实时动态展示 LangGraph 的图状态流转**、各个 Agent 的聊天记录、沙箱测试的实时日志输出，极具视觉冲击力和说服力。
-3. **基准评估报告（Benchmark Report）**：
-   * 参考 SWE-bench，本地构建一个包含 20-30 个不同难度（语法错误、逻辑错误、跨文件重构）的 Bug 修复数据集。
-   * 对比“单 Agent（Zero-shot）”与“多 Agent 协同（本系统）”在修复成功率、Token 成本和耗时方面的表现，用直观的数据和图表证明本系统的技术优势。
+```
+                         ┌────────────────────────┐
+                         │  User Input (Issue)     │
+                         └───────────┬────────────┘
+                                     │
+    ┌────────────────────────────────▼──────────────────────────────────┐
+    │                 Presentation Layer                                  │
+    │  ┌──────────────────────────┐  ┌──────────────────────────────┐   │
+    │  │  Streamlit / Gradio      │  │  CLI (click)                 │   │
+    │  │  Dashboard               │  │  mse-cli run --issue "..."   │   │
+    │  └────────────┬─────────────┘  └──────────────┬───────────────┘   │
+    └───────────────┼───────────────────────────────┼───────────────────┘
+                    │                               │
+    ┌───────────────▼───────────────────────────────▼───────────────────┐
+    │                 Application Layer (LangGraph StateGraph)           │
+    │                                                                    │
+    │   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐      │
+    │   │ Product  │──▶│Retriever │──▶│  Coder   │──▶│  Tester  │      │
+    │   │ Agent    │   │ Node     │   │ Agent    │   │ Agent    │      │
+    │   └──────────┘   └──────────┘   └──────────┘   └─────┬────┘      │
+    │        ▲                                              │          │
+    │        └──────────────────────────────────────────────┘          │
+    │                     Reflexion Loop (Diagnose → Coder → Test)     │
+    └────────────────────────────┬─────────────────────────────────────┘
+                                 │
+    ┌────────────────────────────▼─────────────────────────────────────┐
+    │                    Domain / Service Layer                          │
+    │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────────┐  │
+    │  │ Codebase RAG │ │ Diff/Patch   │ │ Docker Sandbox            │  │
+    │  │ + AST Parser │ │ Engine       │ │ + Test Executor           │  │
+    │  │ + Chroma     │ │ (UDiff/S&R)  │ │ + Resource Limiter        │  │
+    │  └──────────────┘ └──────────────┘ └──────────────────────────┘  │
+    │  ┌──────────────┐ ┌──────────────────────────────────────────┐   │
+    │  │ Observability│ │ Evaluation Engine                         │   │
+    │  │ (LangSmith)  │ │ (Benchmark Runner + Metric Reporter)     │   │
+    │  └──────────────┘ └──────────────────────────────────────────┘   │
+    └──────────────────────────────────────────────────────────────────┘
+```
+
+### LangGraph 多 Agent 协同流程
+
+```text
+START
+  → product_node        (需求分析，任务拆解)
+  → retrieve_context    (代码库检索，上下文召回)
+  → coder_node          (生成修改 Diff)
+  → patch_node          (应用补丁)
+  → tester_node         (沙箱执行测试)
+  → route_by_test_result:
+       ├─ 测试通过 → END (成功)
+       ├─ 失败 + 可重试 → diagnose_node → coder_node (Reflexion 回路)
+       └─ 超过重试上限 → fail_node → END (失败报告)
+```
+
+### 核心数据流
+
+| 阶段 | 输入 | 输出 | 关键技术 |
+|------|------|------|----------|
+| **需求分析** | 用户 Issue | 任务拆解列表、目标文件 | Product Agent + Pydantic |
+| **上下文检索** | Issue + 任务拆解 | Top-K 相关代码块 + 调用依赖 | AST 解析 + Chroma 向量检索 |
+| **代码生成** | 子任务 + 代码上下文 | Unified Diff / Search&Replace | Coder Agent + Structured Output |
+| **补丁应用** | Diff + 目标仓库 | 应用结果 (成功/失败) | Python Diff Engine |
+| **沙箱测试** | 修改后代码 + pytest | stdout, stderr, exit code | Docker SDK + 资源限制 |
+| **诊断修正** | 测试日志 + 失败历史 | 根因分析 + 修改约束 | Diagnose Agent + Reflexion |
 
 ---
 
-# 💡 简历书写与面试准备建议（如何将此项目完美呈现）
+## 核心特性
 
-当您把这个项目写进简历时，可以参考以下表述方式（遵循 STAR 原则）：
+### 🧠 多智能体协同
+- **Product Agent**：将用户 Issue 拆解为结构化子任务，明确修改目标与优先级
+- **Coder Agent**：基于上下文生成增量式代码修改（Unified Diff / Search & Replace）
+- **Tester Agent**：在 Docker 沙箱中执行测试，分类提取错误信息
+- **Diagnose Agent**：分析失败原因，在 Reflexion 回路中为下一轮修复提供约束
 
-> **项目名称：** 基于 LangGraph 的多智能体协同软件工程与自动修复系统 (Dev-Agent)
-> **项目职责/工作：**
+### 🔍 高精度代码检索 (Codebase RAG)
+- 基于 AST（抽象语法树）解析代码结构，构建函数/类级别的符号索引
+- 调用依赖图（Call Graph）自动提取，提供代码片段的外围接口上下文
+- 语义向量检索 + BGE-Reranker 重排，提升召回精度
+- Context Budget 管理，避免 Token 浪费
+
+### 🔄 自适应纠错闭环 (Reflexion Loop)
+- 测试失败后自动提取报错日志，分类错误类型（语法、导入、断言、超时等）
+- Coder Agent 在下一轮修复时必须引用上一轮失败原因
+- 死循环检测：重复错误加速计数，超过阈值后触发 Product Agent 重规划
+- 自动回退机制：连续失败时恢复到上一个稳定代码版本
+
+### 🐳 安全沙箱执行
+- Docker 容器完全网络隔离，非 root 用户运行
+- CPU / 内存 / 磁盘 / 超时严格限制
+- 所有 Linux Capabilities 丢弃，禁止提权
+- 工作区只读挂载，修改通过 Copy-on-Write 隔离
+
+### 📊 可观测与可视化
+- LangSmith / Arize Phoenix 全链路 Trace 追踪
+- Streamlit Dashboard：实时展示 Agent 状态流转、对话记录、Diff、测试日志
+- Token 消耗与成本精确统计
+- 每次运行自动保存完整轨迹，支持复盘与 Benchmark 分析
+
+### 📈 量化评测体系
+- 内置 20-30 个多难度 Bug 修复 Benchmark 数据集
+- 多基线对比：单 Agent Zero-shot / 单 Agent + Retry / 多 Agent 无 Reflexion / 完整系统
+- 8 项核心指标：修复成功率、MTTR、Token 效率、首次通过率、退化率等
+- 自动生成评测报告与可视化图表
+
+---
+
+## 技术栈
+
+| 层级 | 技术 | 选型理由 |
+|------|------|----------|
+| **Agent 编排** | LangGraph | 显式 StateGraph 控制流程，避免 Chain 的黑盒跳转，防止死循环 |
+| **LLM 调用** | OpenAI / DeepSeek / 智谱 | 多 Provider 适配，支持云端与本地模型 |
+| **结构化输出** | Pydantic + Instructor | 强制 LLM 输出符合 JSON Schema，消除解析失败 |
+| **代码解析** | Python `ast` / Tree-sitter | AST 级别的符号提取、调用关系分析 |
+| **向量检索** | Chroma + BGE-Reranker | 本地化向量数据库，重排模型提升召回精度 |
+| **沙箱执行** | Docker SDK for Python | 安全隔离，动态资源限制 |
+| **测试框架** | pytest + pytest-cov + pytest-asyncio | 业界标准，覆盖率统计 |
+| **可观测性** | LangSmith / Arize Phoenix | LLM 调用链路追踪，Token 成本监控 |
+| **Dashboard** | Streamlit / Gradio | 快速构建可视化界面，支持 WebSocket 实时推送 |
+| **工程化** | ruff + mypy + pre-commit | 代码质量、类型检查、自动化格式 |
+| **配置管理** | python-dotenv + .env.example | 安全的敏感信息管理 |
+
+---
+
+## 快速开始
+
+### 前置依赖
+
+- Python 3.11+
+- Docker Desktop / Docker Engine 24+
+- OpenAI API Key（或其他兼容的 LLM Provider）
+
+### 1. 克隆项目
+
+```bash
+git clone https://github.com/your-username/mse-system.git
+cd mse-system
+```
+
+### 2. 配置环境
+
+```bash
+# 创建虚拟环境
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+# .venv\Scripts\activate   # Windows
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 配置 API Key
+cp .env.example .env
+# 编辑 .env 文件，填入你的 OPENAI_API_KEY
+```
+
+### 3. 验证安装
+
+```bash
+# 运行基础测试
+pytest tests/unit/ -v
+
+# 验证 Docker 沙箱可用性
+python -c "import docker; client = docker.from_env(); print(client.version())"
+```
+
+### 4. 运行第一个 Demo
+
+```bash
+# 使用 CLI 修复一个简单 Bug
+mse-cli run \
+  --issue "修复 calculator.py 中 divide 函数的除零错误" \
+  --repo ./examples/demo_projects/simple_bug \
+  --test "pytest tests/ -v" \
+  --max-retries 3
+
+# 或通过 Python API
+python examples/quick_start.py
+```
+
+### 5. 启动 Dashboard
+
+```bash
+streamlit run src/mse_system/dashboard/app.py --server.port 8501
+# 打开浏览器访问 http://localhost:8501
+```
+
+---
+
+## 使用指南
+
+### CLI 命令
+
+```bash
+# 单次修复任务
+mse-cli run \
+  --issue "Fix IndexError in utils.py line 42 when items list is empty" \
+  --repo /path/to/your/project \
+  --test "pytest tests/ -v" \
+  --max-retries 3 \
+  --model gpt-4o \
+  --output ./runs/latest/
+
+# 批量 Benchmark 评测
+mse-cli benchmark \
+  --dataset ./benchmarks/dataset.jsonl \
+  --baseline both \
+  --parallel 4 \
+  --output ./benchmark_results/
+
+# 查看某次运行的详细报告
+mse-cli report --run-id run_20260119_153042
+
+# 启动 Dashboard
+mse-cli dashboard --host 0.0.0.0 --port 8501
+```
+
+### Python API
+
+```python
+from mse_system import MSESystem
+from mse_system.models import IssueSpec
+
+# 初始化系统
+system = MSESystem(
+    model="gpt-4o",
+    max_retries=3,
+    sandbox_config={
+        "mem_limit": "512m",
+        "timeout_seconds": 60,
+    },
+)
+
+# 创建并执行修复任务
+issue = IssueSpec(
+    description="Fix the IndexError in utils.py:42",
+    repo_path="/path/to/project",
+    test_command="pytest tests/ -v",
+)
+
+result = await system.run(issue)
+
+# 查看结果
+print(f"Status: {result.status}")
+print(f"Retries: {result.retry_count}")
+print(f"Total tokens: {result.total_tokens}")
+print(f"Total cost: ${result.total_cost:.4f}")
+for patch in result.patches:
+    print(f"  Modified: {patch.file_path}")
+    print(f"  Strategy: {patch.strategy}")
+```
+
+### Benchmark 评测
+
+```python
+from mse_system.evaluation import BenchmarkRunner
+
+runner = BenchmarkRunner(
+    dataset_path="./benchmarks/swebench_mini.jsonl",
+    baselines=["single_agent", "multi_agent"],
+    parallel=4,
+)
+
+results = await runner.run()
+
+# 生成报告
+runner.generate_report(results, output="./benchmark_results/")
+runner.generate_charts(results, output="./benchmark_results/charts/")
+```
+
+---
+
+## 项目结构
+
+```
+mse-system/
+├── src/mse_system/                  # 核心源码
+│   ├── agents/                       # Agent 实现
+│   │   ├── __init__.py
+│   │   ├── base.py                   # Agent 基类 + LLM 适配层
+│   │   ├── product.py               # Product Agent（需求拆解）
+│   │   ├── coder.py                 # Coder Agent（代码生成）
+│   │   ├── tester.py                # Tester Agent（测试诊断）
+│   │   └── diagnose.py              # Diagnose Agent（反思修正）
+│   ├── graph/                        # LangGraph 图定义
+│   │   ├── __init__.py
+│   │   ├── state.py                 # ThreadState + Pydantic 模型
+│   │   ├── nodes.py                 # 所有 Node 函数
+│   │   ├── edges.py                 # 条件边 + 路由逻辑
+│   │   └── workflow.py              # StateGraph 构建与编译
+│   ├── retrieval/                    # 代码库检索模块
+│   │   ├── __init__.py
+│   │   ├── parser.py                # AST 解析器 (Python ast / Tree-sitter)
+│   │   ├── indexer.py               # Chroma 向量索引
+│   │   ├── retriever.py             # 混合检索（语义 + 依赖图）
+│   │   └── reranker.py              # Reranker 重排
+│   ├── sandbox/                      # Docker 沙箱执行模块
+│   │   ├── __init__.py
+│   │   ├── executor.py              # Docker 容器生命周期管理
+│   │   ├── config.py                # 沙箱安全配置
+│   │   └── parser.py                # 测试输出解析
+│   ├── patching/                     # 补丁引擎
+│   │   ├── __init__.py
+│   │   ├── diff_engine.py           # Unified Diff / S&R 解析与应用
+│   │   ├── validator.py             # 补丁合法性校验
+│   │   └── snapshot.py              # 文件快照与回退
+│   ├── evaluation/                   # 评测模块
+│   │   ├── __init__.py
+│   │   ├── runner.py                # Benchmark 批量执行器
+│   │   ├── metrics.py               # 指标计算
+│   │   ├── reporter.py              # 报告生成
+│   │   └── charts.py                # 可视化图表
+│   ├── dashboard/                    # Streamlit Dashboard
+│   │   ├── app.py                   # 主入口
+│   │   ├── pages/                   # 各页面组件
+│   │   └── components/              # 可复用 UI 组件
+│   ├── llm/                          # LLM 抽象层
+│   │   ├── __init__.py
+│   │   ├── providers.py             # OpenAI / DeepSeek / Ollama 适配
+│   │   └── token_counter.py         # Token 计数
+│   ├── security/                     # 安全模块
+│   │   ├── __init__.py
+│   │   ├── sanitizer.py             # 输入清洗 + Prompt 注入防护
+│   │   └── logger.py                # 敏感信息脱敏
+│   └── cli/                          # CLI 入口
+│       ├── __init__.py
+│       └── main.py                  # click/typer 命令定义
+├── tests/                            # 测试套件
+│   ├── unit/                         # 单元测试
+│   │   ├── test_ast_parser.py
+│   │   ├── test_retrieval.py
+│   │   ├── test_diff_engine.py
+│   │   ├── test_sandbox_executor.py
+│   │   ├── test_prompt_builder.py
+│   │   ├── test_state_models.py
+│   │   └── test_sanitizer.py
+│   ├── integration/                  # 集成测试
+│   │   ├── test_graph_flow.py
+│   │   ├── test_rag_pipeline.py
+│   │   ├── test_patch_apply_flow.py
+│   │   └── test_sandbox_pytest.py
+│   ├── e2e/                          # 端到端测试
+│   │   ├── test_fix_syntax_error.py
+│   │   ├── test_fix_import_error.py
+│   │   ├── test_fix_logic_bug.py
+│   │   └── test_retry_on_failure.py
+│   ├── conftest.py                   # Pytest fixtures
+│   └── fixtures/                     # 测试数据
+│       ├── demo_projects/            # 含 Bug 的示例项目
+│       └── mock_llm_responses/       # Mock LLM 返回
+├── examples/                         # 示例与演示
+│   ├── demo_projects/                # 演示 Bug 修复项目
+│   ├── quick_start.py                # 快速入门脚本
+│   └── api_usage.py                  # API 使用示例
+├── benchmarks/                       # Benchmark 数据集
+│   ├── dataset.jsonl                 # 20-30 个 Bug 任务
+│   └── README.md                     # 数据集构造说明
+├── docs/                             # 文档
+│   ├── architecture.md               # 架构详解
+│   ├── api_reference.md              # API 参考
+│   └── benchmark_report.md           # 评测报告
+├── runs/                             # 运行记录（gitignore）
+│   └── run_<timestamp>/
+│       ├── state.json                # 完整 ThreadState
+│       ├── patches/                  # 所有生成的 Diff
+│       ├── test.log                  # 测试日志
+│       └── report.md                 # 最终报告
+├── .env.example                      # 环境变量模板
+├── .gitignore
+├── Dockerfile                        # Dashboard 部署镜像
+├── docker-compose.yml                # 一键部署配置
+├── pyproject.toml                    # 项目配置（依赖、lint、type check）
+├── requirements.txt                  # 依赖列表
+├── Plan.md                           # 项目设计方案与计划
+└── readme.md                         # 本文件
+```
+
+---
+
+## 配置说明
+
+`.env` 文件环境变量：
+
+```bash
+# --- 必需的 LLM 配置 ---
+OPENAI_API_KEY=sk-xxx           # 必需
+OPENAI_BASE_URL=https://api.openai.com/v1  # 可选，兼容 DeepSeek/智谱等
+
+# --- 可选配置 ---
+DEEPSEEK_API_KEY=sk-xxx         # DeepSeek 备用
+ZHIPU_API_KEY=xxx               # 智谱 GLM 备用
+
+# --- 沙箱配置 ---
+SANDBOX_IMAGE=mse-sandbox:latest
+SANDBOX_MEM_LIMIT=512m
+SANDBOX_TIMEOUT=60
+SANDBOX_CPU_QUOTA=50000
+
+# --- 检索配置 ---
+CHROMA_PERSIST_DIR=./chroma_data
+RERANKER_MODEL=BAAI/bge-reranker-base
+
+# --- 可观测性 ---
+LANGSMITH_API_KEY=ls_xxx        # 可选
+LANGSMITH_PROJECT=mse-system
+
+# --- Dashboard ---
+DASHBOARD_HOST=0.0.0.0
+DASHBOARD_PORT=8501
+```
+
+---
+
+## Benchmark 评测
+
+系统内置了一个包含 **20-30 个不同难度 Bug 修复任务**的 Benchmark 数据集：
+
+| 难度 | 类型 | 数量 | 示例 |
+|------|------|------|------|
+| Easy | 语法错误、简单 Import 缺失 | 8-10 | `SyntaxError: missing :` |
+| Medium | 单函数逻辑错误、缺少边界判断 | 7-10 | `IndexError when list is empty` |
+| Hard | 跨文件调用错误、类型不匹配 | 5-7 | 跨模块函数签名变更 |
+| Expert | 重构任务、并发 Bug | 2-3 | 线程安全 + 测试补充 |
+
+### 核心指标
+
+| 指标 | 说明 |
+|------|------|
+| **修复成功率 (Fix Rate)** | 目标相比单 Agent 提升 30%+ |
+| **平均修复耗时 (MTTR)** | 端到端从 Issue 到 Test Pass 的时间 |
+| **Token 效率** | 每次成功修复的平均 Token 消耗 |
+| **首次通过率** | 无需重试即修复的占比 |
+| **退化率 (Regression)** | 修复 A 导致 B 失败的比例 |
+
+### 对比基线
+
+- **Baseline A**：单 Agent Zero-shot（一次 LLM 调用生成修复）
+- **Baseline B**：单 Agent + 重试（相同 Agent 可重试 3 次）
+- **Baseline C**：多 Agent 无 Reflexion（去掉诊断回路）
+- **本系统**：LangGraph 多 Agent + Reflexion 完整闭环
+
+---
+
+## 设计亮点
+
+以下设计决策体现了系统在技术深度上的考量，也是面试中常见的追问点：
+
+### 1. 为什么用 LangGraph 而不是 AutoGen / CrewAI？
+
+LangGraph 提供**显式的 StateGraph** 概念。通过明确定义节点、边和 `ThreadState`，开发者对 Agent 的跳转逻辑有**完全的控制权**——这在处理复杂业务流中的死循环和状态丢失问题时至关重要。相比之下，AutoGen 和 CrewAI 的 Agent 交互更偏向对话驱动，在需要精确控制流程（如"重试 3 次后强制触发 Product Agent 重规划"）的场景中可控性不足。
+
+### 2. 如何避免 Agent 死循环？
+
+在 `ThreadState` 中引入三层防护：
+- **衰减机制**：`retry_count` 递增，超过 `max_retries` 后终止
+- **去重机制**：`seen_errors` 集合检测重复错误，重复出现时加速计数
+- **回退机制**：连续 2 次失败后自动恢复到上一稳定快照，防止"越修越坏"
+
+### 3. 如何控制上下文长度？
+
+不采用暴力拼接整个项目。通过 **AST → 符号索引 → 向量检索 → Reranker → 依赖补充** 的多级管道，将上万行代码压缩到 ~4000 tokens 的精准上下文中。同时引入 Context Budget 管理，确保 LLM 调用不超过窗口限制。
+
+### 4. 为什么使用 Diff 而非重写整个文件？
+
+重写整个文件有三个致命问题：(1) Token 消耗巨大；(2) 容易带入无意识的副作用修改；(3) 在多 Agent 协同场景下冲突概率高。系统强制 Coder Agent 输出 Unified Diff 或 Search/Replace Blocks，在应用前进行唯一性校验，应用失败时作为"语法错误"反馈给 Coder。
+
+### 5. 如何保证沙箱安全？
+
+七层安全策略：
+- 网络完全隔离 (`network_disabled`)
+- 非 root 用户运行 (`user: nobody`)
+- 所有 Linux Capabilities 丢弃 (`cap_drop: ALL`)
+- CPU/内存/磁盘严格限制
+- 超时强制 kill
+- 工作区只读挂载 + Copy-on-Write
+- 禁止提权 (`no_new_privileges`)
+
+### 6. 如何评价系统是否真的有效？
+
+通过自建的本地 Benchmark 数据集，在相同的模型、温度、超时配置下，对比多个基线的修复成功率、Token 成本和耗时。量化数据 + 典型案例分析 + 图表展示，用证据说话。
+
+---
+
+## 已知限制与未来规划
+
+### 当前限制
+
+| 限制 | 说明 | 缓解方案 |
+|------|------|---------|
+| **语言支持** | 仅支持 Python 项目（AST 解析、pytest 集成） | 预留 LanguagePlugin 接口，后续扩展 JS/TS/Rust |
+| **模型依赖** | 修复质量高度依赖底层 LLM 能力 | 支持多 Provider，模型升级成本低 |
+| **复杂 Bug** | 涉及多文件 + 跨服务逻辑重构时成功率下降 | 持续优化 Context 策略和 Agent Prompt |
+| **冷启动** | 大型项目首次 AST 索引耗时较长 | 增量索引 + 索引持久化 |
+| **成本** | 多 Agent + 重试导致 Token 成本较高 | 使用 DeepSeek 等低成本模型；设置成本预算 |
+
+### 未来路线图
+
+- [ ] **v0.2**：支持 JavaScript/TypeScript 项目
+- [ ] **v0.3**：Git 原生的分支 + PR 工作流集成
+- [ ] **v0.4**：增量式代码索引（文件变动后自动更新）
+- [ ] **v0.5**：本地模型支持（Ollama / vLLM），降低 API 成本
+- [ ] **v1.0**：SWE-bench 正式评测 + 论文发表
+
+---
+
+## 面试准备
+
+本项目在简历中的建议表述（STAR 原则）：
+
+> **项目名称**：基于 LangGraph 的多智能体协同软件工程与自动修复系统 (MSE-System)
 >
-> * 基于 **LangGraph** 设计并实现了一个具备自适应纠错能力的多智能体协同系统。通过定义 State-Graph，实现了 Product、Coder、Tester 三个 Agent 在状态受控情况下的复杂交互与协同。
-> * 针对代码库大上下文召回难题，利用 **Tree-sitter** 解析 AST 构建项目调用依赖图，结合向量检索与 Reranker，将代码上下文检索的噪声降低了约 40%。
-> * 利用 **Docker SDK** 搭建了安全的、网络隔离的代码运行沙箱，实现了对 LLM 自动生成代码的动态编译、测试与实时 Stdout/Stderr 日志捕获。
-> * 设计了基于 **Reflexion 架构**的自适应纠错闭环。当测试失败时，Tester 智能分析报错并引导 Coder 进行增量式 Diff 修改，在本地基准数据集上将 Bug 自动修复成功率提升了近 30%。
-> * 集成 **LangSmith** 对 LLM 的调用链路进行 Trace 监控，精细化管理多轮对话的 Token 消耗，并通过 Streamlit 实现了 Agent 决策轨迹的可视化展示。
+> **项目职责**：
+> - 基于 **LangGraph** 设计并实现了一个具备自适应纠错能力的多智能体协同系统。通过定义 StateGraph，实现了 Product、Coder、Tester 三个 Agent 在状态受控情况下的复杂交互与协同。
+> - 针对代码库大上下文召回难题，利用 **Tree-sitter** 解析 AST 构建项目调用依赖图，结合向量检索与 Reranker，将代码上下文检索的噪声降低了约 40%。
+> - 利用 **Docker SDK** 搭建了安全的、网络隔离的代码运行沙箱，实现了对 LLM 自动生成代码的动态编译、测试与实时日志捕获。
+> - 设计了基于 **Reflexion 架构**的自适应纠错闭环。当测试失败时，Tester 智能分析报错并引导 Coder 进行增量式 Diff 修改，在本地基准数据集上将 Bug 自动修复成功率提升了近 30%。
+> - 集成 **LangSmith** 对 LLM 的调用链路进行 Trace 监控，精细化管理多轮对话的 Token 消耗，并通过 Streamlit 实现了 Agent 决策轨迹的可视化展示。
 
-通过这种系统设计方案，不仅技术栈新颖（LangGraph 属于目前工业界 Agent 落地的首选方案之一），而且涉及到了**系统安全、状态管理、上下文检索优化、工程化测试**等多个维度的硬核考量，足以向面试官证明这绝非一个普通的“套壳 API”项目。
+### 面试高频问题速查
+
+| 问题 | 回答要点 |
+|------|---------|
+| 为什么用 LangGraph？ | StateGraph 显式控制流程、防死循环、状态可回溯 |
+| 如何避免死循环？ | 三重防护：retry_count、seen_errors 去重、回退机制 |
+| 如何控制上下文？ | AST 符号索引 + 向量检索 + Reranker + 依赖补充 + Budget 管理 |
+| Diff vs 重写？ | 省 Token、少副作用、低冲突概率、应用失败可检测 |
+| 沙箱安全如何保证？ | 网络隔离、非 root、cap 丢弃、资源限制、超时 kill、只读挂载 |
+| 如何证明系统有效？ | 本地 Benchmark 数据集 + 多基线对比 + 量化指标 |
+
+---
+
+## License
+
+MIT License
+
+---
+
+<div align="center">
+  <sub>Built with ❤️ for Software Engineering Excellence</sub>
+</div>

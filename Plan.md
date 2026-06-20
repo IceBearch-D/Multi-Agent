@@ -22,6 +22,487 @@
 - 测试框架：pytest + coverage，用测试结果驱动 Agent 自修复。
 - 可观测性：LangSmith 或 Arize Phoenix 追踪调用链路；Streamlit/Gradio 展示图状态、Agent 消息、日志和评测结果。
 
+---
+
+## 补充设计：系统架构深度解析
+
+### 整体分层架构
+
+系统采用经典的四层架构，每层职责清晰、接口明确，便于独立测试和替换：
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                     Presentation Layer                           │
+│  ┌──────────────────────┐  ┌──────────────────────────────────┐  │
+│  │   Streamlit/Gradio   │  │   CLI (click/typer)              │  │
+│  │   Dashboard          │  │   mse-cli run --issue "..."      │  │
+│  └──────────┬───────────┘  └───────────────┬──────────────────┘  │
+│             └──────────────────────────────┘                     │
+│                         │ HTTP/WebSocket                         │
+├─────────────────────────┼────────────────────────────────────────┤
+│                     Application Layer                            │
+│  ┌──────────────────────┴──────────────────────────────────┐    │
+│  │              LangGraph StateGraph Engine                  │    │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌───────────┐   │    │
+│  │  │Product  │  │Retriever│  │ Coder   │  │ Tester    │   │    │
+│  │  │Agent    │─>│Node     │─>│Agent    │─>│Agent      │   │    │
+│  │  └─────────┘  └─────────┘  └─────────┘  └─────┬─────┘   │    │
+│  │                      ┌────────────────────────┘         │    │
+│  │                      │  Reflexion Loop                   │    │
+│  │                      │  (Diagnose → Coder → Test)        │    │
+│  │                      └────────────────────────────────── │    │
+│  └──────────────────────────────────────────────────────────┘    │
+│                                                                   │
+├──────────────────────────────────────────────────────────────────┤
+│                     Domain / Service Layer                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
+│  │ Codebase RAG │  │ Diff/Patch   │  │ Docker Sandbox        │   │
+│  │ - AST Parser │  │ Engine       │  │ - Container Lifecycle │   │
+│  │ - Chroma Vec │  │ - Unified    │  │ - Executor            │   │
+│  │ - Reranker   │  │   Diff       │  │ - Result Parser       │   │
+│  │ - Call Graph │  │ - S&R Blocks │  │ - Resource Limits     │   │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘   │
+│  ┌──────────────┐  ┌──────────────────────────────────────┐     │
+│  │ Observability│  │ Evaluation Engine                     │     │
+│  │ - Traces     │  │ - Benchmark Runner                    │     │
+│  │ - Metrics    │  │ - Metric Calculator                   │     │
+│  │ - Cost Track │  │ - Report Generator                    │     │
+│  └──────────────┘  └──────────────────────────────────────┘     │
+│                                                                   │
+├──────────────────────────────────────────────────────────────────┤
+│                     Infrastructure Layer                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐    │
+│  │ LLM      │  │ Vector   │  │ Docker   │  │ File System  │    │
+│  │ Provider │  │ Store    │  │ Daemon   │  │ (Snapshot)    │    │
+│  │ (OpenAI/ │  │ (Chroma) │  │          │  │              │    │
+│  │ DeepSeek)│  │          │  │          │  │              │    │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────────┘    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### LangGraph StateGraph 详细设计
+
+#### 全局 State 定义 (ThreadState)
+
+`ThreadState` 是全系统的核心数据结构，使用 Pydantic BaseModel 定义，LangGraph 在每个节点间传递并增量更新。State 按职责分为七个维度：
+
+**1. 任务定义维度：**
+- `issue`：用户输入的 Issue 原文
+- `repo_path`：目标代码仓库路径
+- `test_command`：测试命令（默认 `pytest`）
+
+**2. 上下文维度：**
+- `retrieved_context`：检索到的代码块列表（`CodeChunk` 对象，包含 file_path、symbol_name、symbol_type、start_line、end_line、signature、content、imports、docstring、callers、callees）
+- `project_outline`：项目大纲摘要
+- `dependency_graph`：调用依赖图
+
+**3. 规划维度：**
+- `task_breakdown`：Product Agent 拆解的子任务列表
+- `modification_targets`：允许修改的目标文件列表
+
+**4. 修改轨迹维度：**
+- `patches`：当前轮的补丁列表（`PatchBlock` 对象，包含 id、file_path、original、replacement、strategy（unified_diff / search_replace）、source_agent、applied、error）
+- `patch_history`：每轮 patches 的历史快照
+- `last_stable_snapshot`：最后一个稳定版本的文件系统备份路径
+
+**5. 测试与诊断维度：**
+- `test_result`：当前测试结果（`TestResult` 对象，包含 exit_code、stdout、stderr、duration_seconds、passed、failed、errors、error_details）
+- `test_history`：历次测试结果
+- `failure_reason`：失败原因描述
+- `error_category`：错误分类（SyntaxError / ImportError / AssertionError / TimeoutExpired / PatchApplyError 等）
+
+**6. 流程控制维度：**
+- `retry_count`：当前重试次数
+- `max_retries`：最大重试次数（默认 3）
+- `seen_errors`：已见过的错误签名集合，用于死循环检测
+- `status`：当前状态（init → planning → coding → testing → success / failed）
+- `termination_reason`：终止原因
+
+**7. 可观测维度：**
+- `agent_messages`：所有 Agent 的对话记录（`AgentMessage` 对象，包含 agent、timestamp、role、content、token_usage）
+- `node_trajectory`：节点访问轨迹
+- `total_tokens` / `total_cost`：累计 Token 消耗和成本
+- `start_time` / `end_time`：任务起止时间
+
+#### 节点职责与接口契约
+
+每个节点遵循统一的接口契约：
+
+- **Node 函数**：接收 `ThreadState`，返回 `dict`（需要增量更新的字段），不修改传入的 state 对象
+- **条件边函数**：接收 `ThreadState`，返回字符串字面量（`"success"` / `"need_retry"` / `"max_retries_exceeded"`），决定下一步跳转
+
+**节点详细设计：**
+
+| 节点 | 输入依赖 | 输出字段 | 失败策略 |
+|------|---------|---------|---------|
+| `product_node` | `issue`, `project_outline` | `task_breakdown`, `modification_targets` | 让 LLM 重试 2 次，仍失败则终止 |
+| `retrieve_context_node` | `issue`, `task_breakdown`, `repo_path` | `retrieved_context`, `dependency_graph` | 降级到全文件扫描 |
+| `coder_node` | `task_breakdown`, `retrieved_context`, `failure_reason` | `patches` (新增) | 让 LLM 修复格式，最多 2 次 |
+| `patch_node` | `patches`, `repo_path` | `patches[*].applied`, `patches[*].error` | 回退未应用的 patch |
+| `tester_node` | `repo_path`, `test_command` | `test_result` | 超时 kill；沙箱异常则标记 `error_category="SandboxError"` |
+| `diagnose_node` | `test_result`, `patches`, `retry_count` | `failure_reason`, `error_category` | 规则引擎 + LLM 兜底 |
+| `fail_node` | 全量 state | `termination_reason`, 最终报告 | 生成人类可读的失败报告 |
+
+### 图结构定义（含条件路由）
+
+使用 LangGraph 的 `StateGraph` 构建工作流图，通过 `add_node` 注册 7 个节点，`add_edge` 定义固定流转边，`add_conditional_edges` 在 `tester` 节点后实现三分支路由：
+
+**固定边（顺序执行）：**
+`product` → `retrieve_context` → `coder` → `patch` → `tester`
+
+**条件边（tester 之后的三分支路由）：**
+- 测试通过（`exit_code == 0`）→ `END`（成功终止）
+- 测试失败且未超重试上限 → `diagnose` → `coder`（Reflexion 重试回路）
+- 测试失败且超过重试上限 → `fail` → `END`（失败终止）
+
+**入口点：** `product` 节点
+
+### 条件路由逻辑
+
+路由决策基于 `ThreadState` 中的测试结果和重试状态：
+
+1. **成功判定**：若 `test_result.exit_code == 0`，返回 `"success"`，流程进入 END
+2. **死循环检测**：对当前错误生成签名（error_signature），若该签名已在 `seen_errors` 集合中，说明是重复错误，加速 `retry_count` 计数（额外 +1）
+3. **上限判定**：若 `retry_count >= max_retries`，返回 `"max_retries_exceeded"`，进入失败总结节点
+4. **默认重试**：以上条件均不满足时返回 `"need_retry"`，触发 Diagnose → Coder 回路
+
+设计要点：死循环检测不只看重试次数，还看错误是否"重复出现"——同一个错误反复出现比不同错误更有害，因此重复错误会加速触发终止，避免浪费 Token。
+
+---
+
+## 补充设计：安全模型
+
+### 威胁模型
+
+系统面临的主要安全威胁：
+
+| 威胁 | 攻击面 | 风险等级 |
+|------|--------|---------|
+| 恶意代码执行 | Docker 沙箱内的用户代码 | 高 |
+| Prompt 注入 | 用户输入的 Issue 描述 | 中 |
+| 敏感信息泄露 | LLM 上下文、日志输出 | 中 |
+| 资源耗尽 | 无限循环、超大文件 | 中 |
+| 供应链攻击 | 依赖包、基础镜像 | 低 |
+
+### Docker 沙箱安全策略
+
+沙箱采用多层安全限制，通过 Docker SDK 在启动容器时配置以下约束：
+
+| 安全维度 | 限制措施 | 说明 |
+|----------|---------|------|
+| **网络隔离** | `network_disabled=True` | 完全禁止容器访问外网，防止代码注入后对外通信 |
+| **用户权限** | `user="nobody"` | 以非 root 用户运行，降低权限提升风险 |
+| **Capabilities** | `cap_drop=["ALL"]` | 丢弃所有 Linux capabilities |
+| **提权防护** | `no_new_privileges=True` | 禁止进程通过 setuid/setgid 等机制提权 |
+| **内存限制** | `mem_limit="512m"` | 限制容器最大内存使用 |
+| **CPU 限制** | `cpu_quota=50000, cpu_period=100000` | 限制最多使用 50% 单核 CPU |
+| **超时控制** | `timeout_seconds=60` | 超时后 Docker 强制 kill 容器 |
+| **临时目录** | `tmpfs={"/tmp": "size=64m"}` | 临时目录大小限制，防止磁盘写满 |
+| **工作区隔离** | 只读挂载 + Copy-on-Write | 目标仓库以只读方式挂载（`mode="ro"`），修改在容器可写层进行 |
+| **环境变量** | `PYTHONDONTWRITEBYTECODE=1` | 禁止生成 `.pyc` 文件，减少写入副作用 |
+| **基础镜像** | 固定预装镜像 `mse-sandbox:latest` | 预装 pytest 和相关工具，避免每次构建
+
+### Prompt 注入防护
+
+**输入清洗策略：**
+- 检测并拒绝包含已知注入模式的 Issue（正则匹配 `"ignore previous instructions"`、`"<|...|>"` 特殊 token、`"system prompt:"` 等模式），匹配后直接抛出异常
+- 限制 Issue 长度上限为 2000 字符，超出部分截断
+- 对特殊字符进行转义处理
+
+**日志脱敏策略：**
+- 扫描所有输出文本，使用正则替换敏感信息：
+  - OpenAI API Key 格式（`sk-...`）→ `***API_KEY***`
+  - Bearer Token → `Bearer ***TOKEN***`
+  - 密码赋值（`password="xxx"`）→ `password=***`
+- Dashboard 展示前必须经过脱敏处理，防止 `.env` 和 API Key 泄露
+
+### 文件系统安全
+
+- **修改范围控制**：Coder Agent 只能修改 `retrieved_context` 中命中的文件，超出范围需 Product Agent 审批
+- **快照与回退**：每轮修改前使用 `shutil.copytree` 创建快照，失败后自动恢复
+- **路径遍历防护**：所有文件操作使用 `os.path.realpath` 校验，拒绝 `../` 越权
+
+---
+
+## 补充设计：Prompt 工程策略
+
+### Agent Prompt 架构
+
+每个 Agent 使用结构化的 System Prompt + 动态 Context 注入：
+
+```
+┌─────────────────────────────────────────┐
+│           System Prompt (固定)           │
+│  - Agent 角色定义                        │
+│  - 输出格式约束 (JSON Schema)             │
+│  - 行为规则与边界                         │
+├─────────────────────────────────────────┤
+│           Task Context (动态)             │
+│  - 用户 Issue                            │
+│  - Product Agent 的任务拆解               │
+├─────────────────────────────────────────┤
+│           Code Context (动态)             │
+│  - 检索到的代码片段 (Top-K)               │
+│  - 调用依赖 (Call Graph)                 │
+│  - 项目大纲                              │
+├─────────────────────────────────────────┤
+│           History Context (动态)          │
+│  - 上一轮失败原因                         │
+│  - 已尝试的修改                          │
+│  - 本轮约束条件                          │
+└─────────────────────────────────────────┘
+```
+
+### 各 Agent Prompt 设计要点
+
+**Product Agent：**
+- 输入：Issue 原文 + 项目大纲
+- 输出：`{"task_breakdown": ["子任务1", ...], "modification_targets": ["文件路径"], "priority": "high|medium|low"}`
+- 关键约束：只做规划不做代码修改；不确定时标记 `"uncertain": true` 并说明
+
+**Coder Agent：**
+- 输入：子任务 + 代码上下文 + 失败原因（如有）
+- 输出：`{"patches": [{"file_path": "...", "original": "...", "replacement": "...", "reason": "..."}]}`
+- 关键约束：使用 Search/Replace 精确匹配；禁止重写整个文件；每处修改必须说明原因
+
+**Tester Agent：**
+- 输入：测试日志 (stdout + stderr) + exit code
+- 输出：`{"error_category": "AssertionError", "failed_tests": ["test_xxx"], "root_cause": "...", "severity": "blocker|minor"}`
+- 关键约束：区分"测试框架本身出错"和"业务逻辑错误"
+
+**Diagnose Agent：**
+- 输入：TestResult + 失败历史 + retry_count
+- 输出：`{"should_retry": true, "new_constraints": ["只修改 X 函数"], "suggested_approach": "..."}`
+- 关键约束：重试 > 2 次时必须缩小修改范围
+
+### Context Budget 管理
+
+```
+┌────────────────────────────────────────────┐
+│ 总预算: ~8000 tokens (模型上下文窗口的合理子集) │
+├────────────────────────────────────────────┤
+│ System Prompt         │ ~800 tokens        │
+│ Issue + Task          │ ~500 tokens        │
+│ Project Outline       │ ~1000 tokens       │
+│ Retrieved Code (Top-K)│ ~4000 tokens       │
+│ Dependency Info       │ ~700 tokens        │
+│ History + Constraints │ ~1000 tokens       │
+├────────────────────────────────────────────┤
+│ 预留 (Response)       │ ~4000 tokens       │
+└────────────────────────────────────────────┘
+```
+
+---
+
+## 补充设计：API 与集成接口
+
+### REST API 设计
+
+系统对外暴露 RESTful API 和 WebSocket 端点，供 Dashboard 和外部工具调用：
+
+**`POST /api/v1/tasks`** — 创建并启动修复任务
+- 请求体：`issue`（必填）、`repo_path`（必填）、`test_command`（默认 `"pytest"`）、`max_retries`（默认 3）、`model`（默认 `"gpt-4o"`）
+- 响应：`201 Created`，返回 `task_id` 和初始 `status`
+
+**`GET /api/v1/tasks/{task_id}`** — 查询任务状态与结果
+- 响应体包含：`task_id`、`status`（init / running / success / failed）、`node_trajectory`（节点访问轨迹）、`patches`（所有补丁记录）、`test_result`（最终测试结果）、`agent_messages`（Agent 对话记录）、`total_tokens`、`total_cost`
+
+**`GET /api/v1/tasks/{task_id}/stream`** — WebSocket 端点，实时推送任务执行状态，供 Dashboard 动态展示图状态变化
+
+**`POST /api/v1/benchmarks`** — 批量运行 Benchmark
+- 请求体：`dataset_path`（数据集路径）、`baseline`（single_agent / multi_agent / both）、`parallel`（并行数，默认 1）
+
+### CLI 接口设计
+
+提供命令行工具 `mse-cli`，覆盖三种核心使用场景：
+
+**单次修复 (`mse-cli run`)：**
+- 参数：`--issue`（Issue 描述）、`--repo`（目标仓库路径）、`--test`（测试命令，默认 `"pytest tests/ -v"`）、`--max-retries`（最大重试次数，默认 3）、`--model`（模型选择）、`--output`（输出目录）
+- 行为：同步执行完整的 Issue → 修复 → 测试闭环，结果写入指定输出目录
+
+**批量 Benchmark (`mse-cli benchmark`)：**
+- 参数：`--dataset`（数据集 JSONL 路径）、`--baseline`（基线类型，single_agent / multi_agent / both）、`--parallel`（并行任务数，默认 4）、`--output`（结果输出目录）
+- 行为：批量运行数据集中的所有任务，生成 `benchmark_results.csv` 和可视化图表
+
+**启动 Dashboard (`mse-cli dashboard`)：**
+- 参数：`--host`（绑定地址，默认 `0.0.0.0`）、`--port`（端口，默认 8501）、`--runs-dir`（历史运行记录目录）
+- 行为：启动 Streamlit Web 服务，提供可视化交互界面
+
+---
+
+## 补充设计：可扩展性设计
+
+### 多语言支持扩展
+
+```
+                     ┌──────────────────┐
+                     │  LanguagePlugin  │  (Abstract Base Class)
+                     │  + parse_ast()   │
+                     │  + extract_deps()│
+                     │  + get_test_cmd()│
+                     └──────┬───────────┘
+            ┌───────────────┼───────────────┐
+     ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐
+     │PythonPlugin │ │ JSPlugin    │ │ RustPlugin  │
+     │(ast module) │ │(tree-sitter)│ │(tree-sitter)│
+     └─────────────┘ └─────────────┘ └─────────────┘
+```
+
+- 第一阶段：Python（内置 `ast` 模块）
+- 第二阶段：JavaScript/TypeScript（Tree-sitter）
+- 第三阶段：Rust/Go（Tree-sitter + cargo/go test 集成）
+
+### Agent 类型扩展
+
+系统通过插件注册机制支持新增 Agent 类型：
+
+- 定义 `AgentPlugin` 抽象基类，要求实现 `get_system_prompt()`（返回 Agent 的系统提示词）和 `execute(state: ThreadState) -> dict`（执行逻辑并返回 State 增量更新）
+- 通过 `agent_registry.register(name, instance)` 注册新 Agent
+- 在 LangGraph 图中通过 `workflow.add_node(name, agent_registry.get(name).execute)` 动态插入
+- 示例扩展方向：Security Auditor（安全审计 Agent）、Refactor Agent（重构 Agent）、Documentation Agent（文档生成 Agent）
+
+### 模型提供商适配
+
+通过统一的 `LLMProvider` 抽象层解耦 Agent 逻辑与具体模型 API：
+
+- 抽象接口定义两个核心方法：`chat(messages, tools, schema)` → 统一聊天接口（支持 Function Calling 和 Structured Output）；`count_tokens(text)` → Token 计数
+- 具体实现：`OpenAIProvider`（GPT-4o 系列）、`DeepSeekProvider`（兼容 OpenAI SDK）、`OllamaProvider`（本地部署模型）
+- 切换模型只需修改配置中的 provider 名称，Agent 代码无需任何改动
+- 后续可扩展：Claude Provider、Gemini Provider、vLLM Provider
+
+---
+
+## 补充设计：测试策略
+
+### 测试金字塔
+
+```
+           ┌──────┐
+           │ E2E  │  ~10 个：完整 Issue → 修复 → 验证流程
+           ├──────┤
+           │ 集成  │  ~30 个：模块间交互 (Agent + RAG + Sandbox)
+           ├──────────┤
+           │   单元测试  │  ~100+ 个：每个模块的独立测试
+           └──────────┘
+```
+
+### 测试目录结构
+
+```
+tests/
+├── unit/
+│   ├── test_ast_parser.py          # AST 解析
+│   ├── test_retrieval.py           # 检索模块
+│   ├── test_diff_engine.py         # Diff/Patch 引擎
+│   ├── test_sandbox_executor.py    # Docker 沙箱 (需 Docker 环境)
+│   ├── test_prompt_builder.py      # Prompt 构造
+│   ├── test_state_models.py        # Pydantic 模型验证
+│   └── test_sanitizer.py           # 输入清洗
+├── integration/
+│   ├── test_graph_flow.py          # LangGraph 流程 (Mock LLM)
+│   ├── test_rag_pipeline.py        # 完整检索链路
+│   ├── test_patch_apply_flow.py    # 补丁应用流程
+│   └── test_sandbox_pytest.py      # 沙箱内 pytest 执行
+├── e2e/
+│   ├── test_fix_syntax_error.py    # 端到端：语法错误修复
+│   ├── test_fix_import_error.py    # 端到端：导入错误修复
+│   ├── test_fix_logic_bug.py       # 端到端：逻辑错误修复
+│   └── test_retry_on_failure.py    # 端到端：失败重试
+├── conftest.py                     # 共享 fixture
+└── fixtures/
+    ├── demo_projects/              # 测试用最小项目
+    │   ├── simple_bug/             # 含单个语法错误的项目
+    │   ├── cross_file_bug/         # 含跨文件错误的项目
+    │   └── logic_bug/              # 含逻辑错误的项目
+    └── mock_llm_responses/         # Mock LLM 返回
+```
+
+### 覆盖率目标与排除
+
+| 模块 | 目标覆盖率 | 备注 |
+|------|-----------|------|
+| `retrieval/` | ≥ 85% | 核心逻辑，易测试 |
+| `patching/` | ≥ 85% | 纯字符串处理 |
+| `sandbox/` | ≥ 60% | 依赖 Docker，部分测试需标记 `@pytest.mark.docker` |
+| `graph/` | ≥ 80% | Mock LLM 后测试流程 |
+| `agents/` | ≥ 70% | LLM 调用层 Mock，Prompt 构建层实测 |
+| `evaluation/` | ≥ 75% | 核心指标计算逻辑 |
+| Dashboard | ≥ 40% | UI 组件不强制高覆盖，逻辑层独立测试 |
+
+---
+
+## 补充设计：CI/CD 与 DevOps
+
+### 项目配置完整性
+
+**pyproject.toml 配置要点：**
+
+- **项目元数据**：`name="mse-system"`、`version="0.1.0"`、`requires-python=">=3.11"`
+- **核心依赖**：langgraph（Agent 编排）、langchain（LLM 抽象）、openai（模型调用）、chromadb（向量存储）、docker（沙箱执行）、pydantic（数据模型）、instructor（结构化输出）、streamlit（Dashboard）、tree-sitter（代码解析）、pytest + pytest-cov + pytest-asyncio（测试框架）、python-dotenv（配置管理）
+- **可选依赖分组**：
+  - `dev`：ruff（代码检查）、mypy（类型检查，strict 模式）、pre-commit（提交钩子）
+  - `dashboard`：streamlit
+  - `deepseek`：openai SDK（DeepSeek 兼容 OpenAI 接口）
+- **代码质量工具配置**：
+  - ruff：line-length=100，py311 目标版本，启用 E/F/I/N/W/UP/B/C4/SIM 规则
+  - mypy：strict=true 严格模式
+- **pytest 配置**：`testpaths=["tests"]`，自定义 markers：`docker`（需要 Docker 环境）、`slow`（耗时 > 10s）、`llm`（调用真实 LLM API，会产生费用）
+
+### Docker 部署配置
+
+**Dockerfile 设计：**
+- 基础镜像：`python:3.11-slim`（轻量级）
+- 工作目录：`/app`
+- 分层构建：先复制依赖文件并安装（利用 Docker 缓存层），再复制源码
+- 启动命令：Streamlit Dashboard，监听 8501 端口
+
+**docker-compose.yml 服务编排（两个服务）：**
+
+| 服务 | 镜像 | 端口 | 挂载 | 说明 |
+|------|------|------|------|------|
+| `mse-system` | 本地构建 | `8501:8501` | `./runs`（运行记录）、`./examples`（只读）、`/var/run/docker.sock`（沙箱需要） | Dashboard 主服务，需挂载 Docker socket 以管理沙箱容器 |
+| `chroma` | `chromadb/chroma:latest` | `8001:8000` | `./chroma_data`（向量数据持久化） | 向量数据库，独立部署 |
+
+关键设计决策：`mse-system` 需要挂载宿主机的 `/var/run/docker.sock`，这是因为沙箱执行模块需要通过 Docker SDK 在宿主机上启动隔离容器（DinD 模式在资源隔离上不如直接操作宿主机 Docker）。
+
+---
+
+## 补充设计：评估指标体系
+
+### 核心指标定义
+
+| 指标 | 公式 | 说明 |
+|------|------|------|
+| **修复成功率 (Fix Rate)** | `passed_tasks / total_tasks` | 测试全部通过视为成功 |
+| **平均修复耗时 (MTTR)** | `sum(fix_duration) / total_tasks` | 包含 LLM 调用 + 测试时间 |
+| **Token 效率 (Token Efficiency)** | `total_tokens / passed_tasks` | 每次成功修复的平均 Token 消耗 |
+| **首次通过率 (First-Pass Rate)** | `first_try_passes / total_tasks` | 无需重试即修复的比例 |
+| **平均重试次数 (Avg Retries)** | `sum(retries) / total_tasks` | 仅统计最终成功的任务 |
+| **Patch 应用成功率 (Patch Apply Rate)** | `applied_patches / total_patches` | LLM 输出的补丁能被成功应用的比例 |
+| **检索精度 (Retrieval Precision)** | `relevant_chunks / retrieved_chunks` | 检索到的代码块与修复实际相关的比例 |
+| **退化率 (Regression Rate)** | `new_failures / total_tasks` | 修复 A 导致 B 失败的比例 |
+
+### 对比基线
+
+```
+实验组 A: 本系统 (LangGraph Multi-Agent + Reflexion)
+实验组 B: Single Agent Zero-shot (一次 LLM 调用生成修复)
+实验组 C: Single Agent + Retry (单 Agent 可重试 3 次)
+实验组 D: Multi-Agent without Reflexion (去掉诊断回路)
+```
+
+### 结果可视化模板
+
+Benchmark 报告应包含：
+1. 总体指标对比表（A vs B vs C vs D）
+2. 按难度分层的修复成功率柱状图
+3. Token 消耗 vs 修复成功率的散点图
+4. 重试次数分布直方图
+5. 各阶段耗时 Stacked Bar Chart（检索 / LLM 生成 / 沙箱测试）
+6. 典型案例的时间线图（展示 Reflexion 过程）
+
+---
+
 ## 第 1 周：需求冻结与工程骨架
 
 ### 本周目标
