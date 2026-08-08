@@ -1,0 +1,12 @@
+{
+  "function": "is_valid",
+  "signature": "def is_valid(s: str) -> bool:",
+  "cases": [
+    {"name": "简单", "input": ["()"], "expected": true},
+    {"name": "嵌套", "input": ["()[]{}"], "expected": true},
+    {"name": "全嵌套", "input": ["([{}])"], "expected": true},
+    {"name": "无效1", "input": ["(]"], "expected": false},
+    {"name": "无效2", "input": ["([)]"], "expected": false},
+    {"name": "空串", "input": [""], "expected": true}
+  ]
+}

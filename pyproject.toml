@@ -1,0 +1,11 @@
+[project]
+name = "algosolver"
+version = "0.1.0"
+description = "基于多智能体的算法题自动解答系统（Multi-Agent Algorithm Problem Solver）"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.algosolver]
+# 当前实现零三方运行时依赖；切换到 Plan.md 完整技术栈时再补充：
+# langgraph, pydantic, docker, openai, pytest
+# 安装请走国内源：pip install -i https://pypi.tuna.tsinghua.edu.cn/simple <pkgs>

@@ -1,16 +1,10 @@
+"""沙箱包：默认导出本地子进程执行器（无 Docker 也可运行）。
+
+沙箱的作用是"隔离执行 + 资源限制 + 结构化结果收集"，用来运行候选代码的测试。
+本项目默认使用本地实现（local_sandbox），无需安装 Docker 即可运行。
 """
-MSE 沙箱模块。
+# 从 local_sandbox 模块导入本地执行器及其相关工具，作为本包的公开 API
+from mse.sandbox.local_sandbox import LocalSandbox, ExecResult, create_sandbox, generate_test_runner
 
-提供代码执行的隔离沙箱环境，支持安全的代码运行与结果捕获。
-
-核心组件:
-    - Sandbox: 沙箱执行器，负责在隔离环境中运行代码。
-    - ExecutionResult: 执行结果封装，包含输出、错误及退出码等信息。
-"""
-
-from .sandbox import Sandbox, ExecutionResult
-
-__all__ = ["Sandbox", "ExecutionResult"]
-
-
-
+# __all__ 声明本包对外暴露的符号，供 `from mse.sandbox import *` 使用
+__all__ = ["LocalSandbox", "ExecResult", "create_sandbox", "generate_test_runner"]
