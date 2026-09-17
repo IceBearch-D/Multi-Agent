@@ -490,38 +490,6 @@ LangGraph 提供**显式的 StateGraph** 概念。通过明确定义节点、边
 
 ---
 
-## 面试准备
-
-本项目在简历中的建议表述（STAR 原则）：
-
-> **项目名称**：基于 LangGraph 的多智能体协同算法题目自动解答系统 (AlgoSolver)
->
-> **项目职责**：
-> - 基于 **LangGraph** 设计并实现了一个具备自适应纠错能力的多智能体协同解题系统。通过定义 StateGraph，实现了 Analyzer、Coder、Tester、Diagnose 四个 Agent 在状态受控情况下的协同解题流程。
-> - 设计了结构化的**题目分析链路**：通过 Analyzer Agent 自动识别算法模式（DP、贪心、图论等），枚举边界条件，将模糊的自然语言题目转化为精确的工程规格，引导 Coder 生成高质量解答。
-> - 利用 **Docker SDK** 搭建了安全的、网络隔离的代码运行沙箱，实现了对 LLM 自动生成代码的实时运行、pytest 测试执行与错误分类（Wrong Answer / TLE / Runtime Error）。
-> - 设计了基于 **Reflexion 架构**的自适应纠错闭环。当测试失败时，Diagnose Agent 智能分析报错并引导 Coder 进行针对性修改，在本地算法题目集上将解题成功率提升了近 30%。
-> - 支持多种 LLM Provider（OpenAI / DeepSeek / 智谱），通过 Pydantic + Instructor 约束 Agent 输出结构化数据，消除了 JSON 解析失败的问题。
-
-### 面试高频问题速查
-
-| 问题 | 回答要点 |
-|------|---------|
-| 为什么用 LangGraph？ | StateGraph 显式控制流程、防死循环、状态可回溯 |
-| 如何避免死循环？ | 三重防护：retry_count、seen_errors 去重、最佳代码保留 |
-| Analyzer 如何分析题目？ | 结构化 Prompt → 输出算法类型、复杂度目标、边界条件、解题思路 |
-| 沙箱安全如何保证？ | 网络隔离、非 root、cap 丢弃、资源限制、超时 kill |
-| 为什么生成完整代码而非 Diff？ | 算法题从零编写，无已有代码库；完整代码对 LLM 更自然可靠 |
-| 如何证明系统有效？ | 本地算法题目集 + 多基线对比 + 量化指标 + 难度分层分析 |
-
----
-
-## License
-
-MIT License
-
----
-
 <div align="center">
   <sub>Built with ❤️ for Algorithmic Problem Solving Excellence</sub>
 </div>

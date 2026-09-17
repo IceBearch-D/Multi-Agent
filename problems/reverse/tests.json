@@ -1,0 +1,11 @@
+{
+  "function": "reverse",
+  "signature": "def reverse(x: int) -> int:",
+  "cases": [
+    {"name": "正", "input": [123], "expected": 321},
+    {"name": "负", "input": [-123], "expected": -321},
+    {"name": "末尾0", "input": [120], "expected": 21},
+    {"name": "溢出", "input": [1534236469], "expected": 0},
+    {"name": "零", "input": [0], "expected": 0}
+  ]
+}
