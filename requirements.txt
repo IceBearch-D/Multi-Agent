@@ -1,0 +1,15 @@
+# AlgoSolver 依赖说明
+# ---------------------------------------------------------------------------
+# 当前实现为「零三方运行时依赖」：LLM 客户端 / 编排 / 沙箱 / 测试运行器
+# 全部使用 Python 标准库，因此在任意 Python 3.10+ 环境可直接运行，无需安装。
+#
+# 如后续要切换到 Plan.md 中列出的完整技术栈，请使用国内源安装，例如：
+#   pip install -i https://pypi.tuna.tsinghua.edu.cn/simple langgraph pydantic docker openai pytest
+#
+# 可选（仅用于本地 Docker 沙箱 / 评测）：
+# langgraph>=0.2
+# pydantic>=2.0
+# docker>=7.0
+# openai>=1.0
+# requests>=2.0
+# pytest>=8.0

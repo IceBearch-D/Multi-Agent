@@ -1,0 +1,12 @@
+{
+  "function": "search",
+  "signature": "def search(nums: list[int], target: int) -> int:",
+  "cases": [
+    {"name": "存在", "input": [[-1, 0, 3, 5, 9, 12], 9], "expected": 4},
+    {"name": "不存在", "input": [[-1, 0, 3, 5, 9, 12], 2], "expected": -1},
+    {"name": "单元素命中", "input": [[5], 5], "expected": 0},
+    {"name": "单元素未中", "input": [[5], 3], "expected": -1},
+    {"name": "左端", "input": [[1, 2, 3, 4, 5], 1], "expected": 0},
+    {"name": "右端", "input": [[1, 2, 3, 4, 5], 5], "expected": 4}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "function": "two_sum",
+  "signature": "def two_sum(nums: list[int], target: int) -> list[int]:",
+  "cases": [
+    {"name": "示例", "input": [[2, 7, 11, 15], 9], "expected": [0, 1]},
+    {"name": "无重复元素", "input": [[3, 2, 4], 6], "expected": [1, 2]},
+    {"name": "相同元素", "input": [[3, 3], 6], "expected": [0, 1]},
+    {"name": "负数", "input": [[-1, -2, -3, -4, -5], -8], "expected": [2, 4]},
+    {"name": "较大数组", "input": [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 19], "expected": [8, 9]}
+  ]
+}
